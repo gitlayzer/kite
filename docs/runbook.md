@@ -149,6 +149,7 @@ make docs-build
 - `KUBECONFIG`: source path for first-run cluster import when no clusters exist.
 - `SEALOS_AUTH_ENABLED`: enables the Sealos login API.
 - `SEALOS_JWT_SECRET`: JWT secret used for Sealos auth validation.
+- `KITE_SEALOS_STALE_TTL_DAYS`: inactivity TTL for Sealos auto-provisioned users/clusters before the hourly stale cleanup removes them (default `30`, `0` disables).
 - `KITE_NAMESPACE_SCOPE_EXEMPT_NAMESPACES`: comma-separated Sealos workspace namespaces that represent global/admin credentials. Matching Sealos users receive `*` namespaces on their managed cluster and Kite's built-in `admin` role. When the same Sealos user logs into a non-exempt workspace, Kite removes that user's stale built-in `admin` assignment before RBAC sync.
 - `AUTH_COOKIE_SAMESITE` and `AUTH_COOKIE_SECURE`: cookie settings for normal and iframe deployments.
 - `VITE_SEALOS_AUTO_LOGIN`: frontend build-time flag controlling Sealos SDK session login attempts.

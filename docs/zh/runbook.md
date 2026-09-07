@@ -78,6 +78,7 @@ make docs-build
 - `KUBECONFIG`：首次导入集群时使用的 kubeconfig 路径。
 - `SEALOS_AUTH_ENABLED`：启用 Sealos 登录接口。
 - `SEALOS_JWT_SECRET`：Sealos 认证校验使用的 JWT 密钥。
+- `KITE_SEALOS_STALE_TTL_DAYS`：Sealos 自动创建的用户/集群在未登录活跃多少天后被每小时执行的残留清理删除（默认 `30`，设为 `0` 关闭）。
 - `KITE_NAMESPACE_SCOPE_EXEMPT_NAMESPACES`：逗号分隔的 Sealos 工作空间命名空间列表，表示这些工作空间使用全局/管理员凭据。命中的 Sealos 用户会获得其托管集群下的 `*` 命名空间权限，并被分配 Kite 内置 `admin` 角色。
 - `AUTH_COOKIE_SAMESITE` 和 `AUTH_COOKIE_SECURE`：普通部署和 iframe 部署下的 Cookie 策略。
 - `VITE_SEALOS_AUTO_LOGIN`：构建期前端开关，控制是否自动尝试 Sealos SDK 会话登录。

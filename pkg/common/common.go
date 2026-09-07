@@ -2,6 +2,7 @@ package common
 
 import (
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -66,6 +67,10 @@ var (
 	SealosJWTSecret   = ""
 	// SealosDefaultPrometheusURL sets default Prometheus URL for Sealos-managed clusters.
 	SealosDefaultPrometheusURL = ""
+	// SealosStaleCleanupTTLDays controls how many days of login inactivity a
+	// Sealos auto-provisioned user (and its auto-created clusters/roles) may
+	// reach before the stale cleanup deletes them. <= 0 disables the sweep.
+	SealosStaleCleanupTTLDays = 30
 
 	// NamespaceScopeExemptNamespaces lists namespaces that should not force
 	// namespace-scoped mode even when kubeconfig current-context.namespace is set.
@@ -173,6 +178,14 @@ func LoadEnvs() {
 	}
 	if v := strings.TrimSpace(os.Getenv("SEALOS_DEFAULT_PROMETHEUS_URL")); v != "" {
 		SealosDefaultPrometheusURL = v
+	}
+	if v := strings.TrimSpace(os.Getenv("KITE_SEALOS_STALE_TTL_DAYS")); v != "" {
+		// Invalid values keep the default instead of silently disabling the sweep.
+		if days, err := strconv.Atoi(v); err == nil {
+			SealosStaleCleanupTTLDays = days
+		} else {
+			klog.Warningf("Invalid KITE_SEALOS_STALE_TTL_DAYS=%q, want integer days, keep default %d", v, SealosStaleCleanupTTLDays)
+		}
 	}
 	if v := strings.TrimSpace(os.Getenv("KITE_NAMESPACE_SCOPE_EXEMPT_NAMESPACES")); v != "" {
 		namespaces := make(map[string]struct{})

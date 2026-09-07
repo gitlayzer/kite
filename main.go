@@ -271,6 +271,10 @@ func main() {
 	appCtx, cancelApp := context.WithCancel(context.Background())
 	defer cancelApp()
 	scheduler.Start(appCtx, cm)
+	// Sweep Sealos auto-provisioned users/clusters that have been inactive
+	// past the configured TTL, so the cluster selector and the sync loop are
+	// not polluted by long-dead workspace bindings.
+	auth.StartStaleSealosCleanup(appCtx, cm)
 
 	base := r.Group(common.Base)
 	// Setup router
