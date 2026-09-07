@@ -5,6 +5,7 @@ Kite supports several environment variables by default to change the default val
 - **KITE_USERNAME**: Set the initial administrator username. The user is created at boot when no users exist yet.
 - **KITE_PASSWORD**: Set the initial administrator password. Used together with `KITE_USERNAME`.
 - **KUBECONFIG**: Kubernetes configuration file path, default value is `~/.kube/config`. When kite has no configured clusters, it will discover and import clusters from this path at boot.
+- **KITE_SEALOS_STALE_TTL_DAYS**: Days of login inactivity before Sealos auto-provisioned users and their auto-created clusters/roles are deleted by the hourly stale cleanup. Default `30`; set `0` to disable the sweep.
 
 - **JWT_SECRET**: Secret key used for signing and verifying JWT
 - **KITE_ENCRYPT_KEY**: Secret key used for encrypting sensitive data, such as user passwords, OAuth clientSecret, kubeconfig, etc.

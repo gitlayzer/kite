@@ -48,6 +48,10 @@ platform:
 sealos:
   # Injected as env SEALOS_JWT_SECRET when non-empty.
   jwtSecret: ''
+  # Days of login inactivity before Sealos auto-provisioned users and their
+  # auto-created clusters/roles are swept (env KITE_SEALOS_STALE_TTL_DAYS).
+  # Set to 0 to disable the stale cleanup.
+  staleTTLDays: 30
 
 superUser:
   create: false
