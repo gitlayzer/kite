@@ -30,6 +30,10 @@ const (
 // entries whose kubeconfigs have long expired — which shows up as "Sync
 // Error" noise for admins and as repeated failed client rebuilds in the
 // cluster sync loop.
+//
+// The sweep loop runs in its own goroutine and this function returns
+// immediately, matching scheduler.Start: a blocking loop in the caller's
+// goroutine would prevent the HTTP server from ever starting.
 func StartStaleSealosCleanup(ctx context.Context, cm *cluster.ClusterManager) {
 	ttlDays := common.SealosStaleCleanupTTLDays
 	if ttlDays <= 0 {
@@ -38,28 +42,30 @@ func StartStaleSealosCleanup(ctx context.Context, cm *cluster.ClusterManager) {
 	}
 	klog.Infof("sealos stale cleanup enabled: ttl=%dd interval=%s", ttlDays, staleCleanupInterval)
 
-	ticker := time.NewTicker(staleCleanupInterval)
-	defer ticker.Stop()
-	for {
-		removed, err := SweepStaleSealosUsers(time.Now(), ttlDays, staleSweepBatchSize)
-		if err != nil {
-			klog.Warningf("sealos stale cleanup sweep failed: %v", err)
-		}
-		if removed > 0 {
-			// Torn-down clusters must drop their informer clients and RBAC
-			// must forget the deleted roles/assignments.
-			cm.TriggerSync()
-			if err := rbac.ForceSyncRolesConfig(); err != nil {
-				klog.Warningf("sealos stale cleanup: failed to reload RBAC config: %v", err)
+	go func() {
+		ticker := time.NewTicker(staleCleanupInterval)
+		defer ticker.Stop()
+		for {
+			removed, err := SweepStaleSealosUsers(time.Now(), ttlDays, staleSweepBatchSize)
+			if err != nil {
+				klog.Warningf("sealos stale cleanup sweep failed: %v", err)
+			}
+			if removed > 0 {
+				// Torn-down clusters must drop their informer clients and RBAC
+				// must forget the deleted roles/assignments.
+				cm.TriggerSync()
+				if err := rbac.ForceSyncRolesConfig(); err != nil {
+					klog.Warningf("sealos stale cleanup: failed to reload RBAC config: %v", err)
+				}
+			}
+
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
 			}
 		}
-
-		select {
-		case <-ctx.Done():
-			return
-		case <-ticker.C:
-		}
-	}
+	}()
 }
 
 // SweepStaleSealosUsers deletes up to limit Sealos auto-provisioned users
