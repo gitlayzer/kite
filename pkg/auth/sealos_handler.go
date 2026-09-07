@@ -13,6 +13,7 @@ import (
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/zxh326/kite/pkg/common"
 	"github.com/zxh326/kite/pkg/model"
+	"github.com/zxh326/kite/pkg/permissions"
 	"github.com/zxh326/kite/pkg/rbac"
 	"gorm.io/gorm"
 )
@@ -182,7 +183,11 @@ func getSealosDefaultPrometheusURL() string {
 	return strings.TrimSpace(common.SealosDefaultPrometheusURL)
 }
 
-func upsertSealosCluster(clusterName, kubeconfig, namespace string) error {
+// upsertSealosCluster creates or refreshes the cluster record for a Sealos
+// login and reports whether anything actually changed. The caller uses the
+// changed flag to skip redundant role/RBAC sync work on repeat logins with
+// an identical kubeconfig.
+func upsertSealosCluster(clusterName, kubeconfig, namespace string) (bool, error) {
 	defaultPrometheusURL := getSealosDefaultPrometheusURL()
 	description := "Managed by Sealos SSO"
 	if namespace != "" {
@@ -191,7 +196,7 @@ func upsertSealosCluster(clusterName, kubeconfig, namespace string) error {
 	cluster, err := model.GetClusterByName(clusterName)
 	if err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
-			return model.AddCluster(&model.Cluster{
+			return true, model.AddCluster(&model.Cluster{
 				Name:          clusterName,
 				Description:   description,
 				Config:        model.SecretString(kubeconfig),
@@ -201,14 +206,14 @@ func upsertSealosCluster(clusterName, kubeconfig, namespace string) error {
 				Enable:        true,
 			})
 		}
-		return err
+		return false, err
 	}
 
 	updates := buildSealosClusterUpdates(cluster, description, kubeconfig, defaultPrometheusURL)
 	if len(updates) == 0 {
-		return nil
+		return false, nil
 	}
-	return model.UpdateCluster(cluster, updates)
+	return true, model.UpdateCluster(cluster, updates)
 }
 
 func buildSealosClusterUpdates(cluster *model.Cluster, description, kubeconfig, defaultPrometheusURL string) map[string]interface{} {
@@ -395,15 +400,9 @@ func (h *AuthHandler) SealosLogin(c *gin.Context) {
 	}
 
 	clusterName := buildSealosClusterName(userID, workspaceID)
-	if err := upsertSealosCluster(clusterName, req.Kubeconfig, workspaceID); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to sync sealos cluster"})
-		return
-	}
-
-	roleName := buildSealosRoleName(userID)
-	role, err := ensureSealosRole(roleName, clusterName, workspaceID)
+	clusterChanged, err := upsertSealosCluster(clusterName, req.Kubeconfig, workspaceID)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to sync sealos role"})
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to sync sealos cluster"})
 		return
 	}
 
@@ -417,25 +416,61 @@ func (h *AuthHandler) SealosLogin(c *gin.Context) {
 		return
 	}
 
-	if err := ensureSealosRoleAssignment(role.ID, user.Username); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to assign sealos role"})
-		return
+	// Role/RBAC sync runs on every login where the cluster binding changed
+	// (new workspace or rotated kubeconfig). On repeat logins with an
+	// identical kubeconfig the role is already correct, so the writes are
+	// skipped — the cheap existence checks below keep the sync self-healing
+	// if the role or assignment was deleted manually in the meantime.
+	roleName := buildSealosRoleName(userID)
+	needRoleSync := clusterChanged
+	if !needRoleSync {
+		existingRole, roleErr := model.GetRoleByName(roleName)
+		switch {
+		case errors.Is(roleErr, gorm.ErrRecordNotFound):
+			needRoleSync = true
+		case roleErr != nil:
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to check sealos role"})
+			return
+		default:
+			var count int64
+			if err := model.DB.Model(&model.RoleAssignment{}).
+				Where("role_id = ? AND subject_type = ? AND subject = ?", existingRole.ID, model.SubjectTypeUser, user.Username).
+				Count(&count).Error; err != nil {
+				c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to check sealos role assignment"})
+				return
+			}
+			needRoleSync = count == 0
+		}
 	}
-	if err := syncSealosAdminRoleAssignment(workspaceID, user.Username); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to sync sealos admin role"})
-		return
-	}
-	if err := rbac.ForceSyncRolesConfig(); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to sync sealos rbac"})
-		return
-	}
-	select {
-	case rbac.SyncNow <- struct{}{}:
-	default:
+
+	if needRoleSync {
+		role, err := ensureSealosRole(roleName, clusterName, workspaceID)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to sync sealos role"})
+			return
+		}
+		if err := ensureSealosRoleAssignment(role.ID, user.Username); err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to assign sealos role"})
+			return
+		}
+		if err := syncSealosAdminRoleAssignment(workspaceID, user.Username); err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to sync sealos admin role"})
+			return
+		}
+		if err := rbac.ForceSyncRolesConfig(); err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to sync sealos rbac"})
+			return
+		}
+		select {
+		case rbac.SyncNow <- struct{}{}:
+		default:
+		}
 	}
 
 	if h.clusterManager != nil {
-		h.clusterManager.TriggerSync()
+		// Only this user's cluster needs (re)building — a full sync of every
+		// tenant cluster on every login was a major cost on large platforms.
+		h.clusterManager.TriggerSyncForCluster(clusterName)
 		_ = h.clusterManager.WaitForCluster(clusterName, 5*time.Second)
 	}
 
@@ -450,7 +485,10 @@ func (h *AuthHandler) SealosLogin(c *gin.Context) {
 	setCookieClient(c, "x-cluster-name", clusterName, common.CookieExpirationSeconds)
 
 	c.JSON(http.StatusOK, gin.H{
-		"user":         user,
+		"user": user,
+		// Capabilities ride along so the frontend can render the user
+		// immediately without a second /api/auth/user round-trip.
+		"capabilities": permissions.BuildUserCapabilities(*user, clusterName),
 		"cluster":      clusterName,
 		"namespace":    workspaceID,
 		"token_type":   "Bearer",
