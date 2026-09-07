@@ -191,6 +191,27 @@ const getSealosAppClient = (): SealosAppClient | null => {
   return sdkModule.sealosApp ?? sdkModule.default?.sealosApp ?? null
 }
 
+// localStorage key holding the fingerprint of the Sealos desktop session
+// that last completed a full login, used to skip redundant logins when the
+// desktop session has not changed.
+const SEALOS_SESSION_FINGERPRINT_KEY = 'kite.sealos.session-fingerprint'
+
+// fingerprintSealosSession builds a cheap FNV-1a fingerprint of the desktop
+// session for change detection. It is not a security boundary — the backend
+// re-validates the Sealos JWT on every actual login.
+const fingerprintSealosSession = (
+  token: string,
+  kubeconfig: string
+): string => {
+  const input = token + '\n' + kubeconfig
+  let hash = 0x811c9dc5
+  for (let i = 0; i < input.length; i++) {
+    hash ^= input.charCodeAt(i)
+    hash = Math.imul(hash, 0x01000193)
+  }
+  return (hash >>> 0).toString(16)
+}
+
 const getSealosSession = async (
   timeoutMs = 5000
 ): Promise<SealosSessionResult> => {
@@ -340,7 +361,8 @@ export function AuthProvider({ children }: AuthProviderProps) {
   const syncSealosSession = useCallback(
     async (
       currentUser: User | null,
-      enabled = sealosAuthEnabledRef.current
+      enabled = sealosAuthEnabledRef.current,
+      prefetchedProbe?: Promise<SealosSessionResult>
     ): Promise<boolean> => {
       if (!enabled) {
         setSealosSdkAccessStatus('disabled')
@@ -364,13 +386,31 @@ export function AuthProvider({ children }: AuthProviderProps) {
       const syncPromise = (async (): Promise<boolean> => {
         try {
           setSealosSdkAccessStatus('checking')
-          const { session: sealosSession, sdkAccessible } =
-            await getSealosSession()
+          // A prefetched probe overlaps the providers/user round-trips; the
+          // focus re-sync path probes lazily here instead.
+          const { session: sealosSession, sdkAccessible } = await (
+            prefetchedProbe ?? getSealosSession()
+          )
           setSealosSdkAccessStatus(
             sdkAccessible ? 'available' : 'unavailable'
           )
           if (!sealosSession) {
             return false
+          }
+
+          // Skip the whole login round-trip when the desktop session is
+          // unchanged since the last successful login and the Kite session
+          // is still valid. Every page load and focus re-sync would
+          // otherwise POST a full login again (the multi-second entry cost).
+          const fingerprint = fingerprintSealosSession(
+            sealosSession.token,
+            sealosSession.kubeconfig
+          )
+          if (
+            currentUser &&
+            localStorage.getItem(SEALOS_SESSION_FINGERPRINT_KEY) === fingerprint
+          ) {
+            return true
           }
 
           const response = await fetch(withSubPath('/api/auth/login/sealos'), {
@@ -400,12 +440,12 @@ export function AuthProvider({ children }: AuthProviderProps) {
           } else if (data?.token_type === 'kite-cookie') {
             writeAuthToken(null)
           }
-          await queryClient.invalidateQueries({ queryKey: ['clusters'] })
-          await queryClient.invalidateQueries({ queryKey: ['cluster-list'] })
-          await queryClient.refetchQueries({
-            queryKey: ['clusters'],
-            type: 'active',
-          })
+          // Mark cluster queries stale without awaiting them: ClusterGate
+          // owns the loading state for the clusters list, so the auth gate
+          // must not block on this refetch. Active queries refetch in the
+          // background automatically.
+          void queryClient.invalidateQueries({ queryKey: ['clusters'] })
+          void queryClient.invalidateQueries({ queryKey: ['cluster-list'] })
 
           const previousCluster = readCurrentCluster()
           const nextCluster =
@@ -430,7 +470,29 @@ export function AuthProvider({ children }: AuthProviderProps) {
             })
           }
 
-          await checkAuthInternal({ preserveUserOnFailure: true })
+          // The login response already carries the user (with roles) and
+          // capabilities, so the session can render directly instead of
+          // paying a second /api/auth/user round-trip. Fall back to a
+          // re-check for older backends that do not return the user.
+          const loginUser = data?.user as User | undefined
+          if (loginUser && typeof loginUser.username === 'string') {
+            loginUser.capabilities = data?.capabilities as
+              | UserCapabilities
+              | undefined
+            loginUser.isAdmin = function () {
+              return (
+                this.roles?.some(
+                  (role: { name: string }) => role.name === 'admin'
+                ) || false
+              )
+            }
+            setUser(loginUser)
+          } else {
+            await checkAuthInternal({ preserveUserOnFailure: true })
+          }
+          // Mark this desktop session as logged in: subsequent page loads
+          // and focus re-syncs with the same session skip the login.
+          localStorage.setItem(SEALOS_SESSION_FINGERPRINT_KEY, fingerprint)
           return true
         } catch (error) {
           console.error('Sealos session sync failed:', error)
@@ -614,6 +676,8 @@ export function AuthProvider({ children }: AuthProviderProps) {
         writeAuthToken(null)
         setUser(null)
         writeCurrentCluster(null)
+        // Drop the session fingerprint so the next login always re-syncs.
+        localStorage.removeItem(SEALOS_SESSION_FINGERPRINT_KEY)
         window.location.href = withSubPath('/login?reason=logout')
       } else {
         throw new Error('Failed to logout')
@@ -628,6 +692,13 @@ export function AuthProvider({ children }: AuthProviderProps) {
     const initAuth = async () => {
       setIsLoading(true)
       try {
+        // The desktop SDK probe does not depend on the providers/user
+        // responses, so it starts immediately and overlaps both; it is only
+        // awaited inside syncSealosSession when Sealos auth is actually in
+        // play. This removes the probe latency from the serial entry chain.
+        const sealosProbe = shouldTrySealosAutoLogin()
+          ? getSealosSession()
+          : undefined
         // loadProviders and checkAuthInternal hit independent endpoints and
         // write disjoint state, so they run in parallel; this removes one
         // full round-trip from the blocking auth gate on every page load.
@@ -636,7 +707,7 @@ export function AuthProvider({ children }: AuthProviderProps) {
           checkAuthInternal(),
         ])
         await Promise.all([
-          syncSealosSession(currentUser, sealosEnabled),
+          syncSealosSession(currentUser, sealosEnabled, sealosProbe),
           syncSealosLanguage(currentUser, sealosEnabled),
         ])
       } finally {
