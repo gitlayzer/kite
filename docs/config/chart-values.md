@@ -30,6 +30,7 @@ This document describes all available configuration options for the Kite Helm Ch
 | `certSecretName`       | Ingress TLS secret used when HTTPS is enabled                                            | `"wildcard-cert"`                                   |
 | `platform.tlsRejectUnauthorized` | Value injected to env `NODE_TLS_REJECT_UNAUTHORIZED`                          | `"1"`                                               |
 | `sealos.jwtSecret`     | Value injected to env `SEALOS_JWT_SECRET`                                                | `""`                                                 |
+| `sealos.staleTTLDays`  | Inactivity days before Sealos auto-provisioned users/clusters are swept (env `KITE_SEALOS_STALE_TTL_DAYS`). `0` disables. | `30`                                                 |
 
 ## Database Configuration
 

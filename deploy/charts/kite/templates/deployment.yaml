@@ -101,6 +101,10 @@ spec:
             - name: SEALOS_JWT_SECRET
               value: {{ .Values.sealos.jwtSecret | quote }}
             {{- end }}
+            {{- if hasKey .Values.sealos "staleTTLDays" }}
+            - name: KITE_SEALOS_STALE_TTL_DAYS
+              value: {{ .Values.sealos.staleTTLDays | quote }}
+            {{- end }}
             {{- if .Values.basePath }}
             - name: KITE_BASE
               value: {{ .Values.basePath }}
