@@ -238,9 +238,18 @@ export function ResourceTable<T>({
     !selectedNamespaceExists
       ? missingNamespaceFallback
       : effectiveSelectedNamespace
+  // When the backend rejects the selected namespace as outside the current
+  // workspace scope (e.g. a stale selection stored before the cluster became
+  // namespace-scoped), the effect below the query pins the request to the
+  // cluster's scoped namespace so the view recovers by itself instead of
+  // sitting on an error page.
+  const [repairedScopeNamespace, setRepairedScopeNamespace] = useState<
+    string | undefined
+  >(undefined)
   const requestNamespace = clusterScope
     ? undefined
-    : fixedNamespace || validatedSelectedNamespace
+    : fixedNamespace || repairedScopeNamespace || validatedSelectedNamespace
+
   const [useSSE, setUseSSE] = useState(false)
   const resolvedResourceType = (resourceType ??
     (resourceName.toLowerCase() as ResourceType)) as ResourceType
@@ -277,7 +286,28 @@ export function ResourceTable<T>({
       Boolean(clusterScope || fixedNamespace || validatedSelectedNamespace),
   })
 
-  // (moved below after error is defined)
+  // Auto-repair an out-of-scope namespace selection: the backend rejects
+  // the request with "outside the current workspace scope <ns>", so pin the
+  // namespace to the cluster's scoped namespace (or the one named in the
+  // error) and persist it under the per-cluster key, then let the re-keyed
+  // query refetch. Without this, a stale stored namespace would keep the
+  // page stuck on the error.
+  useEffect(() => {
+    if (!queryError) return
+    const message =
+      queryError instanceof Error ? queryError.message : String(queryError)
+    const match = message.match(/outside the current workspace scope\s+(\S+)/)
+    if (!match) return
+    const scopedNs = currentClusterInfo?.namespace || match[1]
+    if (!scopedNs) return
+    setRepairedScopeNamespace(scopedNs)
+    setSelectedNamespace(scopedNs)
+    const clusterName = localStorage.getItem('current-cluster')
+    if (clusterName) {
+      localStorage.setItem(`${clusterName}selectedNamespace`, scopedNs)
+      localStorage.setItem(`${clusterName}selectedNamespace:source`, 'fixed')
+    }
+  }, [queryError, currentClusterInfo?.namespace])
 
   // Update sessionStorage when search query changes
   useEffect(() => {
