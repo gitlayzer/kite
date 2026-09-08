@@ -296,8 +296,10 @@ export function ResourceTable<T>({
   // the request with "outside the current workspace scope <ns>", so pin the
   // namespace to the scope named in the error (authoritative — the cluster
   // info may be stale) and persist it under the per-cluster key, then let
-  // the re-keyed query refetch. Without this, a stale stored namespace
-  // would keep the page stuck on the error.
+  // the re-keyed query refetch. The repair is recorded against the cluster
+  // that produced this render's query (currentCluster), never a racy
+  // localStorage read, so a cluster switch cannot misattribute it. Without
+  // this, a stale stored namespace would keep the page stuck on the error.
   useEffect(() => {
     if (!queryError) return
     const message =
@@ -305,15 +307,12 @@ export function ResourceTable<T>({
     const match = message.match(/outside the current workspace scope\s+(\S+)/)
     if (!match) return
     const scopedNs = match[1] || currentClusterInfo?.namespace
-    if (!scopedNs) return
-    const clusterName = localStorage.getItem('current-cluster')
-    if (clusterName) {
-      setRepairedScope({ cluster: clusterName, namespace: scopedNs })
-      localStorage.setItem(`${clusterName}selectedNamespace`, scopedNs)
-      localStorage.setItem(`${clusterName}selectedNamespace:source`, 'fixed')
-    }
+    if (!scopedNs || !currentCluster) return
+    setRepairedScope({ cluster: currentCluster, namespace: scopedNs })
+    localStorage.setItem(`${currentCluster}selectedNamespace`, scopedNs)
+    localStorage.setItem(`${currentCluster}selectedNamespace:source`, 'fixed')
     setSelectedNamespace(scopedNs)
-  }, [queryError, currentClusterInfo?.namespace])
+  }, [queryError, currentCluster, currentClusterInfo?.namespace])
 
   // Update sessionStorage when search query changes
   useEffect(() => {
