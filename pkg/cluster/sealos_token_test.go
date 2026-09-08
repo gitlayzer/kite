@@ -72,3 +72,13 @@ func TestPrepareSealosTokenInjectionRequiresStaticToken(t *testing.T) {
 	assert.False(t, injected)
 	assert.Nil(t, config.WrapTransport)
 }
+
+// TestDeleteSealosClusterToken ensures teardown evicts the store entry so
+// rotated tokens of removed clusters cannot linger.
+func TestDeleteSealosClusterToken(t *testing.T) {
+	SetSealosClusterToken("sealos-gone-ws", "token-x")
+	require.Equal(t, "token-x", sealosClusterToken("sealos-gone-ws"))
+
+	DeleteSealosClusterToken("sealos-gone-ws")
+	assert.Empty(t, sealosClusterToken("sealos-gone-ws"))
+}

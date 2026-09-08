@@ -63,6 +63,13 @@ func SetSealosClusterToken(name, token string) {
 	sealosClusterTokens.Store(name, token)
 }
 
+// DeleteSealosClusterToken drops the stored token when a cluster's client is
+// torn down, so stale entries cannot accumulate or leak across cluster
+// deletions.
+func DeleteSealosClusterToken(name string) {
+	sealosClusterTokens.Delete(name)
+}
+
 // sealosClusterToken returns the freshest token known for the cluster, or ""
 // when none has been recorded yet.
 func sealosClusterToken(name string) string {

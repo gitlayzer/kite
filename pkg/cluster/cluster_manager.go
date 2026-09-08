@@ -716,6 +716,9 @@ func stopClientSet(name string, clientSet *ClientSet) {
 		return
 	}
 	clientSet.K8sClient.Stop(name)
+	// Drop the token store entry as well so rotated tokens of removed clusters
+	// do not linger in memory.
+	DeleteSealosClusterToken(name)
 }
 
 // shouldUpdateCluster decides whether the cached ClientSet needs to be updated
