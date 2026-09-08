@@ -272,7 +272,10 @@ export function ResourceTable<T>({
       useSSE ||
       !namespaceSelectionReady ||
       namespaceValidationPending ||
-      (!clusterScope && !fixedNamespace && !validatedSelectedNamespace),
+      (!clusterScope &&
+        !fixedNamespace &&
+        !validatedSelectedNamespace &&
+        !repairedScopeNamespace),
   })
 
   // SSE state (when enabled)
@@ -306,13 +309,26 @@ export function ResourceTable<T>({
       queryError instanceof Error ? queryError.message : String(queryError)
     const match = message.match(/outside the current workspace scope\s+(\S+)/)
     if (!match) return
-    const scopedNs = match[1] || currentClusterInfo?.namespace
+    const errorScope = match[1]
+    const infoScope = currentClusterInfo?.namespaceScoped
+      ? currentClusterInfo.namespace
+      : undefined
+    // A scope error whose named scope disagrees with the current cluster's
+    // known scope belongs to a previous cluster (a late-settling response
+    // after a switch) — repairing with it would pin the wrong namespace.
+    if (infoScope && errorScope !== infoScope) return
+    const scopedNs = infoScope || errorScope || currentClusterInfo?.namespace
     if (!scopedNs || !currentCluster) return
     setRepairedScope({ cluster: currentCluster, namespace: scopedNs })
     localStorage.setItem(`${currentCluster}selectedNamespace`, scopedNs)
     localStorage.setItem(`${currentCluster}selectedNamespace:source`, 'fixed')
     setSelectedNamespace(scopedNs)
-  }, [queryError, currentCluster, currentClusterInfo?.namespace])
+  }, [
+    queryError,
+    currentCluster,
+    currentClusterInfo?.namespace,
+    currentClusterInfo?.namespaceScoped,
+  ])
 
   // Update sessionStorage when search query changes
   useEffect(() => {

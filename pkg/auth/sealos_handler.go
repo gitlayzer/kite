@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"slices"
 	"strings"
 	"time"
 
@@ -452,6 +453,15 @@ func (h *AuthHandler) SealosLogin(c *gin.Context) {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to check sealos role"})
 			return
 		default:
+			// Existence alone is not enough: a manually edited or previously
+			// stale role must also still grant THIS exact cluster and
+			// workspace, otherwise the login would keep the user bound to the
+			// wrong scope while skipping the resync.
+			if !slices.Equal(existingRole.Clusters, []string{clusterName}) ||
+				!slices.Equal(existingRole.Namespaces, buildSealosRoleNamespaces(workspaceID)) {
+				needRoleSync = true
+				break
+			}
 			var count int64
 			if err := model.DB.Model(&model.RoleAssignment{}).
 				Where("role_id = ? AND subject_type = ? AND subject = ?", existingRole.ID, model.SubjectTypeUser, user.Username).

@@ -427,22 +427,26 @@ export function AuthProvider({ children }: AuthProviderProps) {
           )
           const skipIsFresh =
             Date.now() - lastLoginTs < SEALOS_LOGIN_SKIP_MAX_AGE_MS
-          // Self-heal guard: if the current cluster is already in a build
-          // error state (e.g. the backend's injected token has expired),
-          // force a full login so the token store gets refreshed instead of
-          // skipping into a broken state.
+          // Self-heal guard: only skip when the clusters cache can actually
+          // PROVE the current cluster is healthy. On a cold load the cache is
+          // empty (AuthProvider runs before ClusterProvider fetches), where
+          // skipping would blind this guard — a full login is cheap now. And
+          // if the cluster is already in a build-error state (e.g. the
+          // backend's injected token has expired), a full login refreshes
+          // the token store instead of skipping into a broken state.
           const cachedClusters = queryClient.getQueryData<Cluster[]>([
             'clusters',
           ])
-          const currentClusterHasError = Boolean(
-            cachedClusters?.find((c) => c.name === readCurrentCluster())
-              ?.error
+          const cachedClusterInfo = cachedClusters?.find(
+            (c) => c.name === readCurrentCluster()
           )
+          const clusterProvenHealthy =
+            Boolean(cachedClusterInfo) && !cachedClusterInfo?.error
           if (
             currentUser &&
             canFingerprint &&
             skipIsFresh &&
-            !currentClusterHasError &&
+            clusterProvenHealthy &&
             localStorage.getItem(SEALOS_SESSION_FINGERPRINT_KEY) === fingerprint
           ) {
             return true

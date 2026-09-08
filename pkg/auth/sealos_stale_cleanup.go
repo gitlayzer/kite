@@ -148,11 +148,14 @@ func SweepStaleSealosUsers(now time.Time, ttlDays, limit int) (int, error) {
 		}
 
 		// (b) The auto-generated role also references the current cluster.
+		// Role rows are persisted and admin-editable, so role-derived names
+		// must pass the same ownership proof as name-derived ones; otherwise
+		// an edited role could make the sweep delete another user's cluster.
 		roleName := buildSealosRoleName(userID)
 		role, roleErr := model.GetRoleByName(roleName)
 		if roleErr == nil {
 			for _, name := range role.Clusters {
-				if strings.HasPrefix(name, "sealos-") {
+				if owner, ok := longestPrefixOwner(name); ok && owner == ownerPrefix {
 					clusterNames[name] = struct{}{}
 				}
 			}
