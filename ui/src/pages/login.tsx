@@ -60,7 +60,7 @@ const normalizeReason = (
 
 export function LoginPage() {
   const { t } = useTranslation()
-  const { user, isLoading, sealosSdkAccessStatus } = useAuth()
+  const { user, isLoading, sealosSdkAccessStatus, sealosSyncing } = useAuth()
   const [searchParams] = useSearchParams()
   const showSealosSdkStatus =
     sealosSdkAccessStatus === 'checking' ||
@@ -106,10 +106,12 @@ export function LoginPage() {
     return <Navigate to="/" replace />
   }
 
-  // Keep the spinner while the SDK channel probe is in flight so the
-  // desktop-required notice cannot flash for users who actually did open
-  // Kite from the Sealos desktop.
-  if (isLoading || sealosSdkAccessStatus === 'checking') {
+  // Keep the spinner while the SDK channel probe OR a session sync is in
+  // flight: the probe runs first (status 'checking'), then the login POST
+  // and user setup run (sealosSyncing). Covering both windows means the
+  // notice/fault content can never flash for users who are about to be
+  // signed in automatically.
+  if (isLoading || sealosSdkAccessStatus === 'checking' || sealosSyncing) {
     return (
       <div className="flex items-center justify-center min-h-screen">
         <div className="animate-spin rounded-full h-32 w-32 border-b-2 border-primary"></div>
