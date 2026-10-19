@@ -50,6 +50,7 @@ interface AuthContextType {
   user: User | null
   isLoading: boolean
   sealosSdkAccessStatus: SealosSdkAccessStatus
+  sealosSyncing: boolean
   providers: string[]
   helmArtifactHubEnabled: boolean
   capabilities: Required<
@@ -219,8 +220,9 @@ const fingerprintSealosSession = (userId: string, workspaceId: string): string =
   return (hash >>> 0).toString(16)
 }
 
-const getSealosSession = async (
-  timeoutMs = 5000
+// getSealosSessionOnce performs a single SDK session probe.
+const getSealosSessionOnce = async (
+  timeoutMs: number
 ): Promise<SealosSessionResult> => {
   let cleanup: (() => void) | undefined
   try {
@@ -241,6 +243,23 @@ const getSealosSession = async (
       cleanup()
     }
   }
+}
+
+const getSealosSession = async (
+  timeoutMs = 5000,
+  maxAttempts = 3
+): Promise<SealosSessionResult> => {
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    const result = await getSealosSessionOnce(timeoutMs)
+    // Retry only when the SDK channel itself was unreachable — the desktop
+    // bridge may still be injecting the SDK on a fresh load. A reachable
+    // channel with no session (desktop signed out) is a final answer.
+    if (result.session || result.sdkAccessible || attempt === maxAttempts) {
+      return result
+    }
+    await new Promise((resolve) => setTimeout(resolve, 700))
+  }
+  return { session: null, sdkAccessible: false }
 }
 
 const getSealosLanguage = async (
@@ -272,6 +291,9 @@ export function AuthProvider({ children }: AuthProviderProps) {
   const [helmArtifactHubEnabled, setHelmArtifactHubEnabled] = useState(true)
   const [sealosSdkAccessStatus, setSealosSdkAccessStatus] =
     useState<SealosSdkAccessStatus>('checking')
+  // True while a Sealos session sync (probe → login → user set) is in flight,
+  // so the login page holds its spinner instead of flashing content.
+  const [sealosSyncing, setSealosSyncing] = useState(false)
   const queryClient = useQueryClient()
   const userRef = useRef<User | null>(null)
   const sealosAuthEnabledRef = useRef(false)
@@ -394,7 +416,8 @@ export function AuthProvider({ children }: AuthProviderProps) {
         try {
           setSealosSdkAccessStatus('checking')
           // A prefetched probe overlaps the providers/user round-trips; the
-          // focus re-sync path probes lazily here instead.
+          // focus re-sync path probes lazily here instead. Retried inside
+          // getSealosSession to ride out the desktop bridge's startup race.
           const { session: sealosSession, sdkAccessible } = await (
             prefetchedProbe ?? getSealosSession()
           )
@@ -548,12 +571,16 @@ export function AuthProvider({ children }: AuthProviderProps) {
       })()
 
       sealosSyncPromiseRef.current = syncPromise
+      // Exposed to the login page so it can hold the spinner for the whole
+      // sync (probe → login → user set) instead of flashing UI mid-flight.
+      setSealosSyncing(true)
       try {
         return await syncPromise
       } finally {
         if (sealosSyncPromiseRef.current === syncPromise) {
           sealosSyncPromiseRef.current = null
         }
+        setSealosSyncing(false)
       }
     },
     [checkAuthInternal, queryClient]
@@ -835,6 +862,7 @@ export function AuthProvider({ children }: AuthProviderProps) {
     user,
     isLoading,
     sealosSdkAccessStatus,
+    sealosSyncing,
     providers,
     helmArtifactHubEnabled,
     capabilities: {
