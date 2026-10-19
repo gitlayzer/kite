@@ -40,6 +40,11 @@ spec:
         - image: ghcr.io/zxh326/kite:latest
           imagePullPolicy: IfNotPresent
           name: kite
+          env:
+            - name: DB_TYPE
+              value: sqlite
+            - name: DB_DSN
+              value: /data/kite.db
           resources:
             limits:
               cpu: 1000m
@@ -62,6 +67,13 @@ spec:
           ports:
             - containerPort: 8080
               protocol: TCP
+          volumeMounts:
+            - name: kite-data
+              mountPath: /data
+      volumes:
+        - name: kite-data
+          persistentVolumeClaim:
+            claimName: kite-data
 ---
 apiVersion: v1
 kind: Service
@@ -79,3 +91,17 @@ spec:
   selector:
     app: kite
   type: ClusterIP
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  labels:
+    app: kite
+  name: kite-data
+  namespace: kube-system
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 1Gi

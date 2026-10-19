@@ -190,7 +190,6 @@ sealos_http_port="$(fetch_configmap_data_key sealos-config httpPort sealos-syste
 sealos_disable_https="$(fetch_configmap_data_key sealos-config disableHttps sealos-system 1 0 2>/dev/null || true)"
 sealos_cert_secret_name="$(fetch_configmap_data_key sealos-config certSecretName sealos-system 1 0 2>/dev/null || true)"
 platform_tls_reject_unauthorized="$(read_cert_tls_reject_unauthorized)"
-kubeblocks_version="$(read_yaml_file_path '.global.featureConfigs.database.kubeblocksVersion')"
 
 [ -n "${sealos_jwt_secret}" ] || error "Failed to read sealos-config.data.jwtInternal"
 [ -n "${sealos_cloud_domain}" ] || error "Failed to read sealos-config.data.cloudDomain"
@@ -256,7 +255,6 @@ helm_set_args=(
   --set-string "disableHttps=${sealos_disable_https:-false}"
   --set-string "certSecretName=${sealos_cert_secret_name:-wildcard-cert}"
   --set-string "platform.tlsRejectUnauthorized=${platform_tls_reject_unauthorized:-1}"
-  --set-string "db.postgres.native.kubeblocksVersion=${kubeblocks_version:-0.8.2}"
 )
 
 if declare -f global_http_external_url >/dev/null 2>&1; then

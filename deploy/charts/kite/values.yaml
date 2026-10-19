@@ -64,41 +64,21 @@ secret:
 
 # Database configuration
 # type: sqlite | postgres | mysql
+# The default deployment uses sqlite stored on a persistent volume; the
+# in-cluster PostgreSQL (KubeBlocks) subchart has been removed. postgres and
+# mysql remain supported against externally managed databases via db.dsn
+# (db.dsn is ignored for sqlite).
 db:
-  type: postgres
+  type: sqlite
   dsn: ''
   autoCreate: true
 
-  postgres:
-    database: postgres
-    sslMode: disable
-    extraOptions: ''
-
-    native:
-      enabled: true
-      clusterName: kite-pg
-      credentialSecretName: ''
-      kubeblocksVersion: '0.8.2'
-      version: postgresql-14.8.0
-      replicas: 3
-      storage: 3Gi
-      backup:
-        enabled: true
-        cron: '0 7 * * *'
-        retentionPeriod: 7d
-      resources:
-        limits:
-          cpu: 1000m
-          memory: 1024Mi
-        requests:
-          cpu: 10m
-          memory: 50Mi
-      terminationPolicy: Delete
-
   sqlite:
     persistence:
+      # Persist the sqlite database file on a PVC so data survives pod
+      # restarts. Requires a default StorageClass (or set storageClass).
       pvc:
-        enabled: false
+        enabled: true
         existingClaim: ''
         storageClass: ''
         accessModes:

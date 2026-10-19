@@ -61,36 +61,18 @@ Create the name of the service account to use
 {{- end }}
 {{- end }}
 
-{{- define "kite.postgresNativeEnabled" -}}
-{{- $dbType := default "sqlite" .Values.db.type -}}
-{{- $postgres := default (dict) .Values.db.postgres -}}
-{{- $native := default (dict) $postgres.native -}}
-{{- $enabled := true -}}
-{{- if hasKey $native "enabled" -}}
-{{- $enabled = $native.enabled -}}
-{{- end -}}
-{{- if and (eq $dbType "postgres") $enabled -}}true{{- else -}}false{{- end -}}
-{{- end }}
-
-{{- define "kite.postgresClusterName" -}}
-{{- $postgres := default (dict) .Values.db.postgres -}}
-{{- $native := default (dict) $postgres.native -}}
-{{- $clusterName := (default "" $native.clusterName) | trim -}}
-{{- if $clusterName -}}
-{{- $clusterName -}}
+{{/*
+Name of the PersistentVolumeClaim backing the sqlite database file.
+Honors db.sqlite.persistence.pvc.existingClaim when provided; otherwise
+derives a claim name from the release fullname.
+*/}}
+{{- define "kite.sqliteClaimName" -}}
+{{- $pvc := default (dict) .Values.db.sqlite.persistence.pvc -}}
+{{- $existing := (default "" $pvc.existingClaim) | trim -}}
+{{- if $existing -}}
+{{- $existing -}}
 {{- else -}}
-{{- printf "%s-pg" .Release.Name | trunc 63 | trimSuffix "-" -}}
-{{- end -}}
-{{- end }}
-
-{{- define "kite.postgresCredentialSecretName" -}}
-{{- $postgres := default (dict) .Values.db.postgres -}}
-{{- $native := default (dict) $postgres.native -}}
-{{- $secretName := (default "" $native.credentialSecretName) | trim -}}
-{{- if $secretName -}}
-{{- $secretName -}}
-{{- else -}}
-{{- printf "%s-conn-credential" (include "kite.postgresClusterName" .) -}}
+{{- printf "%s-storage" (include "kite.fullname" .) | trunc 63 | trimSuffix "-" -}}
 {{- end -}}
 {{- end }}
 

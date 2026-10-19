@@ -34,21 +34,22 @@ This document describes all available configuration options for the Kite Helm Ch
 
 ## Database Configuration
 
-| Parameter       | Description                                                                                                  | Default    |
-| --------------- | ------------------------------------------------------------------------------------------------------------ | ---------- |
-| `db.type`       | Database type: `sqlite`, `postgres`, `mysql`                                                                 | `postgres` |
-| `db.dsn`        | Full DSN string for MySQL/Postgres. Required when type is mysql/postgres and native Postgres is disabled      | `""`       |
-| `db.autoCreate` | Whether Kite should create the target MySQL/Postgres database automatically before running schema migrations | `true`     |
-| `db.postgres.native.kubeblocksVersion` | Sealos global KubeBlocks version marker read by the deploy entrypoint | `"0.8.2"` |
+| Parameter       | Description                                                                                                                      | Default  |
+| --------------- | -------------------------------------------------------------------------------------------------------------------------------- | -------- |
+| `db.type`       | Database type: `sqlite`, `postgres`, `mysql`                                                                                     | `sqlite` |
+| `db.dsn`        | Full DSN string for an external MySQL/Postgres database. Required when `db.type` is `mysql` or `postgres` (ignored for sqlite)   | `""`     |
+| `db.autoCreate` | Whether Kite should create the target MySQL/Postgres database automatically before running schema migrations (no-op for sqlite)  | `true`   |
 
 When `db.autoCreate` is enabled, the configured database user must have permission to create databases. Kite only creates the target database itself; tables are still created by the normal application migration flow.
+
+The chart no longer ships an in-cluster PostgreSQL (KubeBlocks) subchart. The default deployment stores the sqlite database file on a PersistentVolumeClaim; `postgres`/`mysql` remain supported against externally managed databases via `db.dsn`.
 
 ### SQLite Configuration
 
 | Parameter                                 | Description                                               | Default             |
 | ----------------------------------------- | --------------------------------------------------------- | ------------------- |
-| `db.sqlite.persistence.pvc.enabled`       | Whether to create a PVC to store the sqlite database file | `false`             |
-| `db.sqlite.persistence.pvc.existingClaim` | Use existing PVC                                          | `""`                |
+| `db.sqlite.persistence.pvc.enabled`       | Whether to create a PVC to store the sqlite database file                 | `true`              |
+| `db.sqlite.persistence.pvc.existingClaim` | Use an existing PVC instead of creating one (no PVC is created when set)  | `""`                |
 | `db.sqlite.persistence.pvc.storageClass`  | StorageClass for PVC (optional)                           | `""`                |
 | `db.sqlite.persistence.pvc.accessModes`   | Access modes for PVC                                      | `["ReadWriteOnce"]` |
 | `db.sqlite.persistence.pvc.size`          | Requested storage size for PVC                            | `1Gi`               |

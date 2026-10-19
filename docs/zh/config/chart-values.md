@@ -34,21 +34,22 @@
 
 ## 数据库配置
 
-| 参数            | 描述                                                                  | 默认值     |
-| --------------- | --------------------------------------------------------------------- | ---------- |
-| `db.type`       | 数据库类型：`sqlite`、`postgres`、`mysql`                             | `postgres` |
-| `db.dsn`        | MySQL/Postgres 的完整 DSN 字符串。关闭内置 Postgres 且使用外部库时必需 | `""`       |
-| `db.autoCreate` | Kite 是否在运行表结构迁移前自动创建目标 MySQL/Postgres database       | `true`     |
-| `db.postgres.native.kubeblocksVersion` | 部署入口读取的 Sealos 全局 KubeBlocks 版本标记        | `"0.8.2"` |
+| 参数            | 描述                                                                                                 | 默认值   |
+| --------------- | ---------------------------------------------------------------------------------------------------- | -------- |
+| `db.type`       | 数据库类型：`sqlite`、`postgres`、`mysql`                                                            | `sqlite` |
+| `db.dsn`        | 外部 MySQL/Postgres 数据库的完整 DSN 字符串。`db.type` 为 `mysql`/`postgres` 时必需（sqlite 下忽略） | `""`     |
+| `db.autoCreate` | Kite 是否在运行表结构迁移前自动创建目标 MySQL/Postgres database（sqlite 下无效果）                    | `true`   |
 
 开启 `db.autoCreate` 时，配置的数据库账号需要有创建 database 的权限。Kite 只负责创建目标 database，表结构仍由应用正常迁移流程创建。
+
+Chart 不再内置 PostgreSQL（KubeBlocks）子 chart：默认部署通过 PersistentVolumeClaim 持久化存储 sqlite 数据库文件。`postgres`/`mysql` 仍可通过 `db.dsn` 对接外部数据库使用。
 
 ### SQLite 配置
 
 | 参数                                      | 描述                                  | 默认值              |
 | ----------------------------------------- | ------------------------------------- | ------------------- |
-| `db.sqlite.persistence.pvc.enabled`       | 是否创建 PVC 来存储 sqlite 数据库文件 | `false`             |
-| `db.sqlite.persistence.pvc.existingClaim` | 使用现有的 PVC                        | `""`                |
+| `db.sqlite.persistence.pvc.enabled`       | 是否创建 PVC 来存储 sqlite 数据库文件 | `true`              |
+| `db.sqlite.persistence.pvc.existingClaim` | 使用现有的 PVC（设置后不再新建 PVC）  | `""`                |
 | `db.sqlite.persistence.pvc.storageClass`  | PVC 的 StorageClass（可选）           | `""`                |
 | `db.sqlite.persistence.pvc.accessModes`   | PVC 的访问模式                        | `["ReadWriteOnce"]` |
 | `db.sqlite.persistence.pvc.size`          | PVC 请求的存储大小                    | `1Gi`               |

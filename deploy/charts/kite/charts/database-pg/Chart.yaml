@@ -1,6 +1,0 @@
-apiVersion: v2
-name: database-pg
-description: KubeBlocks PostgreSQL chart for Kite
-type: application
-version: 0.1.0
-appVersion: "postgresql-14.8.0"

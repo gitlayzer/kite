@@ -55,7 +55,6 @@ spec:
             - secretRef:
                 name: {{ include "kite.secret" . }}
           env:
-            {{- $postgres := default (dict) .Values.db.postgres }}
             {{- if .Values.host }}
             - name: HOST
               value: {{ .Values.host }}
@@ -69,31 +68,6 @@ spec:
               {{- else }}
               value: {{ (printf "%s/%s" .Values.db.sqlite.persistence.mountPath .Values.db.sqlite.persistence.filename) | quote }}
               {{- end }}
-            {{- else if eq (include "kite.postgresNativeEnabled" .) "true" }}
-            - name: DB_TYPE
-              value: postgres
-            - name: KITE_PG_HOST
-              valueFrom:
-                secretKeyRef:
-                  name: {{ include "kite.postgresCredentialSecretName" . }}
-                  key: host
-            - name: KITE_PG_PORT
-              valueFrom:
-                secretKeyRef:
-                  name: {{ include "kite.postgresCredentialSecretName" . }}
-                  key: port
-            - name: KITE_PG_USER
-              valueFrom:
-                secretKeyRef:
-                  name: {{ include "kite.postgresCredentialSecretName" . }}
-                  key: username
-            - name: KITE_PG_PASSWORD
-              valueFrom:
-                secretKeyRef:
-                  name: {{ include "kite.postgresCredentialSecretName" . }}
-                  key: password
-            - name: DB_DSN
-              value: {{ (printf "host=$(KITE_PG_HOST) user=$(KITE_PG_USER) password=$(KITE_PG_PASSWORD) dbname=%s port=$(KITE_PG_PORT) sslmode=%s %s" (default "postgres" $postgres.database) (default "disable" $postgres.sslMode) (default "" $postgres.extraOptions)) | trim | quote }}
             {{- end }}
             - name: DB_AUTO_CREATE
               value: {{ .Values.db.autoCreate | quote }}
@@ -215,7 +189,7 @@ spec:
         - name: {{ include "kite.fullname" . }}-storage
       {{- if .Values.db.sqlite.persistence.pvc.enabled }}
           persistentVolumeClaim:
-            claimName: {{ include "kite.fullname" . }}-storage
+            claimName: {{ include "kite.sqliteClaimName" . }}
       {{- else if .Values.db.sqlite.persistence.hostPath.enabled }}
           hostPath:
             path: {{ .Values.db.sqlite.persistence.hostPath.path }}

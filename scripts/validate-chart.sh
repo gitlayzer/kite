@@ -65,6 +65,19 @@ else
     exit 1
 fi
 
+# Default values ship sqlite on a persistent volume: the default render must
+# contain the PVC and the /data mount.
+if ! grep -E -q "kind:\s*PersistentVolumeClaim" "$TEMP_DIR/rendered.yaml"; then
+    echo "❌ PersistentVolumeClaim not found in default rendered output"
+    rm -rf "$TEMP_DIR"
+    exit 1
+fi
+if ! grep -E -q "mountPath:\s*/data" "$TEMP_DIR/rendered.yaml"; then
+    echo "❌ Default sqlite mountPath '/data' not found in rendered output"
+    rm -rf "$TEMP_DIR"
+    exit 1
+fi
+
 # Validate rendered YAML
 # echo "📋 Validating rendered YAML..."
 # if kubectl apply --dry-run=client -f "$TEMP_DIR/rendered.yaml" > /dev/null 2>&1; then
@@ -122,14 +135,13 @@ fi
 
 echo "✅ Sqlite rendered content looks correct"
 
-# Test with postgres DSN provided
-echo "🔧 Testing with custom values (postgres dsn)..."
+# Test with an external postgres DSN provided
+echo "🔧 Testing with custom values (external postgres dsn)..."
 cat > "$TEMP_DIR/test-values-postgres.yaml" << EOF
 replicaCount: 1
 db:
     type: postgres
-    postgres:
-        dsn: "host=127.0.0.1 port=5432 user=test password=test dbname=kite sslmode=disable"
+    dsn: "host=127.0.0.1 port=5432 user=test password=test dbname=kite sslmode=disable"
 EOF
 
 if helm template test-release "$CHART_DIR" -f "$TEMP_DIR/test-values-postgres.yaml" > "$TEMP_DIR/rendered-custom-postgres.yaml"; then
@@ -139,9 +151,18 @@ else
         exit 1
 fi
 
-# Content checks for postgres rendering
+# Content checks for external postgres rendering
 echo "📋 Verifying rendered content for postgres DSN..."
 RENDERED_PG="$TEMP_DIR/rendered-custom-postgres.yaml"
+
+# External database settings are delivered through the generated Secret, and
+# no sqlite PVC should be rendered for external database types.
+if ! grep -E -q "^\s*DB_DSN:" "$RENDERED_PG"; then
+    fail "DB_DSN not found in secret for external postgres dsn render"
+fi
+if grep -E -q "kind:\s*PersistentVolumeClaim" "$RENDERED_PG"; then
+    fail "PersistentVolumeClaim unexpectedly present in external postgres rendered output"
+fi
 
 echo "✅ Postgres rendered content looks correct"
 

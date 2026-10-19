@@ -14,36 +14,17 @@ debug: false
 
 # Database configuration
 # type: sqlite | postgres | mysql
+# sqlite on a persistent volume is the default; postgres/mysql remain
+# available for externally managed databases via db.dsn.
 db:
-  type: postgres
+  type: sqlite
   dsn: ''
   autoCreate: true
 
-  postgres:
-    database: postgres
-    sslMode: disable
-    extraOptions: ''
-
-    native:
-      enabled: true
-      clusterName: kite-pg
-      credentialSecretName: ''
-      kubeblocksVersion: '0.8.2'
-      version: postgresql-14.8.0
-      replicas: 3
-      storage: 3Gi
-      backup:
-        enabled: false
-        cron: '0 7 * * *'
-        retentionPeriod: 7d
-      resources:
-        limits:
-          cpu: 1000m
-          memory: 1024Mi
-        requests:
-          cpu: 10m
-          memory: 50Mi
-      terminationPolicy: Delete
+  sqlite:
+    persistence:
+      pvc:
+        enabled: true
 
 # Sealos runtime values for the production deployment.
 # staleTTLDays renders KITE_SEALOS_STALE_TTL_DAYS via the chart template

@@ -226,7 +226,7 @@ Helm chart metadata，所以后续沿用当前 Chart 的升级仍会继续应用
 
 ## Sealos 打包
 
-- Sealos 部署入口会从 `/root/.sealos/cloud/scripts/tools.sh` 加载平台 helper，读取全局 HTTP/TLS 设置，并把 `cloudDomain`、`cloudPort`、`httpPort`、`disableHttps`、`certSecretName`、`platform.tlsRejectUnauthorized` 和 `db.postgres.native.kubeblocksVersion` 传给 Helm。
+- Sealos 部署入口会从 `/root/.sealos/cloud/scripts/tools.sh` 加载平台 helper，读取全局 HTTP/TLS 设置，并把 `cloudDomain`、`cloudPort`、`httpPort`、`disableHttps`、`certSecretName` 和 `platform.tlsRejectUnauthorized` 传给 Helm。
 - 应用覆盖 values 从 `/root/.sealos/cloud/values/apps/kite/*-values.yaml` 按排序顺序加载。若该目录没有 `*-values.yaml`，入口会先复制 chart 默认的 `kite-values.yaml`，再执行 Helm。
 - Release workflow 会为 Sealos 镜像包生成 `.tar.gz.md5`，并附加到 GitHub artifact/release。当前设计不上传镜像包或校验文件到 OSS。
 

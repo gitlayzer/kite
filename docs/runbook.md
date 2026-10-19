@@ -304,7 +304,7 @@ apply the OCI offline image policy.
 
 ## Sealos Packaging
 
-- The Sealos deploy entrypoint loads platform helpers from `/root/.sealos/cloud/scripts/tools.sh`, reads global HTTP/TLS settings, and then passes `cloudDomain`, `cloudPort`, `httpPort`, `disableHttps`, `certSecretName`, `platform.tlsRejectUnauthorized`, and `db.postgres.native.kubeblocksVersion` to Helm.
+- The Sealos deploy entrypoint loads platform helpers from `/root/.sealos/cloud/scripts/tools.sh`, reads global HTTP/TLS settings, and then passes `cloudDomain`, `cloudPort`, `httpPort`, `disableHttps`, `certSecretName`, and `platform.tlsRejectUnauthorized` to Helm.
 - App override values are loaded from `/root/.sealos/cloud/values/apps/kite/*-values.yaml` in sorted order. If that directory has no `*-values.yaml`, the entrypoint copies the chart default `kite-values.yaml` there before running Helm.
 - Release workflows generate `.tar.gz.md5` files for Sealos image packages and attach them to GitHub artifacts/releases. They intentionally do not upload packages or checksums to OSS.
 
