@@ -51,6 +51,15 @@ type Claims struct {
 	Username     string `json:"username"`
 	Provider     string `json:"provider"`
 	RefreshToken string `json:"refresh_token,omitempty"`
+	// Sealos desktop session claims. A token with SealosCluster set
+	// authenticates from these claims instead of the users table: Sealos
+	// login no longer registers users synchronously, so the workspace
+	// identity derived from the kubeconfig rides inside the token.
+	SealosCluster   string `json:"sealos_cluster,omitempty"`
+	SealosNamespace string `json:"sealos_ns,omitempty"`
+	SealosScope     string `json:"sealos_scope,omitempty"`
+	SealosAdmin     bool   `json:"sealos_admin,omitempty"`
+	SealosSub       string `json:"sealos_sub,omitempty"`
 	jwt.RegisteredClaims
 }
 

@@ -40,7 +40,7 @@ const FloatingTerminal = lazy(() =>
 
 function ClusterGate({ children }: { children: ReactNode }) {
   const { t } = useTranslation()
-  const { currentCluster, isLoading, error } = useCluster()
+  const { currentCluster, currentClusterInfo, isLoading, error } = useCluster()
 
   useEffect(() => {
     apiClient.setClusterProvider(() => {
@@ -48,15 +48,17 @@ function ClusterGate({ children }: { children: ReactNode }) {
     })
   }, [currentCluster])
 
-  if (isLoading) {
-    return (
-      <div className="flex h-screen items-center justify-center">
-        <div className="flex items-center space-x-2">
-          <div className="h-4 w-4 animate-spin rounded-full border-2 border-gray-300 border-t-blue-600" />
-          <span>{t('cluster.loading')}</span>
-        </div>
+  const loadingScreen = (
+    <div className="flex h-screen items-center justify-center">
+      <div className="flex items-center space-x-2">
+        <div className="h-4 w-4 animate-spin rounded-full border-2 border-gray-300 border-t-blue-600" />
+        <span>{t('cluster.loading')}</span>
       </div>
-    )
+    </div>
+  )
+
+  if (isLoading) {
+    return loadingScreen
   }
 
   if (error) {
@@ -67,6 +69,13 @@ function ClusterGate({ children }: { children: ReactNode }) {
         </div>
       </div>
     )
+  }
+
+  // Sealos login returns before the cluster client build finishes: while the
+  // selected cluster reports building (or has not appeared in the list yet),
+  // keep the gate up instead of rendering a half-ready dashboard.
+  if (currentCluster && (!currentClusterInfo || currentClusterInfo.building)) {
+    return loadingScreen
   }
 
   return <>{children}</>

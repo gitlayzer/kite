@@ -104,6 +104,17 @@ func (h *GenericResourceHandler[T, V]) recordHistory(c *gin.Context, opType stri
 	cs := c.MustGet("cluster").(*cluster.ClientSet)
 	user := c.MustGet("user").(model.User)
 
+	// Claim-based Sealos sessions have no user row until their first write:
+	// resolve the id lazily so the audit entry keeps operator attribution.
+	operatorID := user.ID
+	if operatorID == 0 && user.Sub != "" {
+		if id, err := model.EnsureUserIDBySub(&user); err == nil {
+			operatorID = id
+		} else {
+			klog.Errorf("Failed to resolve operator id for %s: %v", user.Key(), err)
+		}
+	}
+
 	history := model.ResourceHistory{
 		ClusterName:   cs.Name,
 		ResourceType:  h.name,
@@ -114,7 +125,7 @@ func (h *GenericResourceHandler[T, V]) recordHistory(c *gin.Context, opType stri
 		PreviousYAML:  h.ToYAML(prev),
 		Success:       success,
 		ErrorMessage:  errMsg,
-		OperatorID:    user.ID,
+		OperatorID:    operatorID,
 	}
 	if err := model.DB.Create(&history).Error; err != nil {
 		klog.Errorf("Failed to create resource history: %v", err)

@@ -394,6 +394,55 @@ func TestWaitForClusterRefreshIgnoresStaleError(t *testing.T) {
 	assert.GreaterOrEqual(t, time.Since(start), 10*time.Millisecond)
 }
 
+func TestSyncClustersTracksBuildingState(t *testing.T) {
+	originalListClusters := listClusters
+	originalBuildClientSet := buildClientSetFunc
+	t.Cleanup(func() {
+		listClusters = originalListClusters
+		buildClientSetFunc = originalBuildClientSet
+	})
+
+	currentCluster := &model.Cluster{
+		Name:          "sealos-user-ns-a",
+		Enable:        true,
+		Config:        model.SecretString("kubeconfig-a"),
+		PrometheusURL: "http://prometheus",
+	}
+	listClusters = func() ([]*model.Cluster, error) {
+		return []*model.Cluster{currentCluster}, nil
+	}
+
+	cm := &ClusterManager{
+		clusters:     map[string]*ClientSet{},
+		errors:       map[string]string{},
+		errorBackoff: map[string]clusterBuildBackoff{},
+	}
+
+	// A trigger flags the cluster as building so /api/v1/clusters keeps
+	// reporting it while the client construction is still pending.
+	cm.TriggerSyncForCluster(currentCluster.Name)
+	assert.Contains(t, cm.snapshotRuntimeState().building, currentCluster.Name)
+
+	buildClientSetFunc = func(cluster *model.Cluster) (*ClientSet, error) {
+		return &ClientSet{Name: cluster.Name}, nil
+	}
+	require.NoError(t, syncClustersWithOptions(cm, clusterSyncOptions{ignoreFailedBuildBackoff: true}))
+	snapshot := cm.snapshotRuntimeState()
+	assert.NotContains(t, snapshot.building, currentCluster.Name)
+	assert.Contains(t, snapshot.clusters, currentCluster.Name)
+
+	// A failed build clears the flag as well and falls back to the error entry.
+	delete(cm.clusters, currentCluster.Name)
+	buildClientSetFunc = func(cluster *model.Cluster) (*ClientSet, error) {
+		return nil, errors.New("cache sync failed")
+	}
+	cm.TriggerSyncForCluster(currentCluster.Name)
+	require.NoError(t, syncClustersWithOptions(cm, clusterSyncOptions{ignoreFailedBuildBackoff: true}))
+	snapshot = cm.snapshotRuntimeState()
+	assert.NotContains(t, snapshot.building, currentCluster.Name)
+	assert.Equal(t, "cache sync failed", snapshot.errors[currentCluster.Name])
+}
+
 func TestResolveClientSetForUser(t *testing.T) {
 	cm := &ClusterManager{
 		clusters: map[string]*ClientSet{

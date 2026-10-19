@@ -98,6 +98,30 @@ func GetUserByUsername(username string) (*User, error) {
 	return &user, nil
 }
 
+// EnsureUserIDBySub resolves the database id for an identity that is not
+// guaranteed to be persisted yet: Sealos desktop sessions register lazily
+// because login no longer writes user rows synchronously. The common case is
+// a single indexed read; a minimal row is created only when the identity has
+// never been seen. Callers pass a fully populated user so a created row is
+// immediately meaningful.
+func EnsureUserIDBySub(user *User) (uint, error) {
+	if user.Sub == "" {
+		return 0, errors.New("user sub is empty")
+	}
+	var existing User
+	err := DB.Select("id").Where("sub = ?", user.Sub).First(&existing).Error
+	if err == nil {
+		return existing.ID, nil
+	}
+	if !errors.Is(err, gorm.ErrRecordNotFound) {
+		return 0, err
+	}
+	if err := DB.Create(user).Error; err != nil {
+		return 0, err
+	}
+	return user.ID, nil
+}
+
 // ListUsers returns users with pagination. If limit is 0, defaults to 20.
 func ListUsers(limit int, offset int, search string, sortBy string, sortOrder string, role string) (users []User, total int64, err error) {
 	if limit <= 0 {
@@ -201,7 +225,18 @@ func SetUserEnabled(id uint, enabled bool) error {
 	// Enable/disable must take effect immediately for in-flight sessions, so
 	// the cached row cannot be served after this update.
 	defer invalidateUserByIDCache(uint64(id))
-	return DB.Model(&User{}).Where("id = ?", id).Update("enabled", enabled).Error
+	if err := DB.Model(&User{}).Where("id = ?", id).Update("enabled", enabled).Error; err != nil {
+		return err
+	}
+	// Claim-based sessions (Sealos desktop) never re-read the users table,
+	// so the flip is also recorded in the disabled registry to keep live
+	// sessions blocked. Best effort: a lookup failure leaves the registry
+	// unchanged and the Sealos login path re-syncs it from the table.
+	var username string
+	if err := DB.Model(&User{}).Select("username").Where("id = ?", id).First(&username).Error; err == nil {
+		SetUsernameDisabled(username, !enabled)
+	}
+	return nil
 }
 
 func CheckPassword(hashedPassword, plainPassword string) bool {

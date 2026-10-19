@@ -45,6 +45,7 @@ type ClusterManager struct {
 	clusters       map[string]*ClientSet
 	errors         map[string]string
 	errorBackoff   map[string]clusterBuildBackoff
+	building       map[string]struct{}
 	defaultContext string
 }
 
@@ -280,6 +281,7 @@ func (t *k8sProxyTransport) RoundTrip(req *http.Request) (*http.Response, error)
 type clusterRuntimeSnapshot struct {
 	clusters       map[string]*ClientSet
 	errors         map[string]string
+	building       map[string]struct{}
 	defaultContext string
 }
 
@@ -295,9 +297,14 @@ func (cm *ClusterManager) snapshotRuntimeState() clusterRuntimeSnapshot {
 	for name, errMsg := range cm.errors {
 		errors[name] = errMsg
 	}
+	building := make(map[string]struct{}, len(cm.building))
+	for name := range cm.building {
+		building[name] = struct{}{}
+	}
 	return clusterRuntimeSnapshot{
 		clusters:       clusters,
 		errors:         errors,
+		building:       building,
 		defaultContext: cm.defaultContext,
 	}
 }
@@ -452,7 +459,12 @@ func (cm *ClusterManager) TriggerSync() {
 	cm.triggerSync(clusterSyncRequest{ignoreFailedBuildBackoff: true})
 }
 
+// TriggerSyncForCluster requests a background sync pass and flags the named
+// cluster as building, so /api/v1/clusters keeps reporting it (instead of
+// dropping it from the list) until the client construction lands. Callers
+// must not block on the build: the UI renders the building state.
 func (cm *ClusterManager) TriggerSyncForCluster(name string) {
+	cm.markClusterBuilding(name)
 	cm.triggerSync(clusterSyncRequest{ignoreFailedBuildBackoff: true})
 }
 
@@ -518,6 +530,30 @@ func clusterConfigHash(cluster *model.Cluster) string {
 	}
 	sum := sha256.Sum256([]byte(fmt.Sprintf("%t:%s:%s", cluster.InCluster, cluster.Config, cluster.PrometheusURL)))
 	return fmt.Sprintf("%x", sum[:])
+}
+
+// markClusterBuilding records that client construction for the cluster has
+// been requested and may still be in flight.
+func (cm *ClusterManager) markClusterBuilding(name string) {
+	if name == "" {
+		return
+	}
+	cm.mu.Lock()
+	defer cm.mu.Unlock()
+	cm.markClusterBuildingLocked(name)
+}
+
+// markClusterBuildingLocked requires cm.mu to be held.
+func (cm *ClusterManager) markClusterBuildingLocked(name string) {
+	if cm.building == nil {
+		cm.building = map[string]struct{}{}
+	}
+	cm.building[name] = struct{}{}
+}
+
+// clearClusterBuildingLocked requires cm.mu to be held.
+func (cm *ClusterManager) clearClusterBuildingLocked(name string) {
+	delete(cm.building, name)
 }
 
 func (cm *ClusterManager) shouldSkipFailedBuild(cluster *model.Cluster, now time.Time) bool {
@@ -636,12 +672,17 @@ func syncClustersWithOptions(cm *ClusterManager, options clusterSyncOptions) err
 
 		needsUpdate := shouldUpdateCluster(current, cluster)
 		if !needsUpdate {
+			// Already up to date: no build in flight for this cluster.
+			cm.mu.Lock()
+			cm.clearClusterBuildingLocked(cluster.Name)
+			cm.mu.Unlock()
 			continue
 		}
 		cm.mu.Lock()
 		current, currentExist = cm.clusters[cluster.Name]
 		shouldSkip := !currentExist && !options.ignoreFailedBuildBackoff && cm.shouldSkipFailedBuildLocked(cluster, now)
 		if shouldSkip {
+			cm.clearClusterBuildingLocked(cluster.Name)
 			cm.mu.Unlock()
 			continue
 		}
@@ -650,6 +691,9 @@ func syncClustersWithOptions(cm *ClusterManager, options clusterSyncOptions) err
 		}
 		if !cluster.Enable {
 			cm.clearBuildFailureLocked(cluster.Name)
+			cm.clearClusterBuildingLocked(cluster.Name)
+		} else {
+			cm.markClusterBuildingLocked(cluster.Name)
 		}
 		cm.mu.Unlock()
 
@@ -677,12 +721,14 @@ func syncClustersWithOptions(cm *ClusterManager, options clusterSyncOptions) err
 			cm.mu.Lock()
 			cm.errors[result.cluster.Name] = result.err.Error()
 			cm.recordFailedBuildLocked(result.cluster, now)
+			cm.clearClusterBuildingLocked(result.cluster.Name)
 			cm.mu.Unlock()
 			continue
 		}
 		cm.mu.Lock()
 		cm.clearBuildFailureLocked(result.cluster.Name)
 		cm.clusters[result.cluster.Name] = result.clientSet
+		cm.clearClusterBuildingLocked(result.cluster.Name)
 		cm.mu.Unlock()
 	}
 	stoppedClientSets := map[string]*ClientSet{}
@@ -701,6 +747,11 @@ func syncClustersWithOptions(cm *ClusterManager, options clusterSyncOptions) err
 	for name := range cm.errorBackoff {
 		if _, ok := dbClusterMap[name]; !ok {
 			delete(cm.errorBackoff, name)
+		}
+	}
+	for name := range cm.building {
+		if _, ok := dbClusterMap[name]; !ok {
+			delete(cm.building, name)
 		}
 	}
 	cm.mu.Unlock()
@@ -785,6 +836,7 @@ func NewClusterManager() (*ClusterManager, error) {
 	cm.clusters = make(map[string]*ClientSet)
 	cm.errors = make(map[string]string)
 	cm.errorBackoff = make(map[string]clusterBuildBackoff)
+	cm.building = make(map[string]struct{})
 	go func() {
 		ticker := time.NewTicker(1 * time.Minute)
 		defer ticker.Stop()

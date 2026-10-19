@@ -52,8 +52,12 @@ type ClusterInfo struct {
 	// PrometheusEnabled tells the UI whether this cluster has a working
 	// Prometheus client, so dashboard charts can fire their queries in
 	// parallel with the overview request instead of waiting for it.
-	PrometheusEnabled bool   `json:"prometheusEnabled,omitempty"`
-	Error             string `json:"error,omitempty"`
+	PrometheusEnabled bool `json:"prometheusEnabled,omitempty"`
+	// Building tells the UI that this cluster's client construction has been
+	// triggered and is still in flight; the dashboard gate keeps polling
+	// /api/v1/clusters until the flag clears.
+	Building bool   `json:"building,omitempty"`
+	Error    string `json:"error,omitempty"`
 }
 
 type MetricsCell struct {

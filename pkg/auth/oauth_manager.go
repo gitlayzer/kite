@@ -93,6 +93,36 @@ func (om *OAuthManager) GenerateJWT(user *model.User, refreshToken string) (stri
 	return token.SignedString([]byte(om.jwtSecret))
 }
 
+// GenerateSealosJWT signs a session for a Sealos desktop login. Unlike
+// GenerateJWT it does not require a persisted user row: the workspace
+// identity derived from the kubeconfig rides inside the token, and
+// RequireAuth rebuilds the request identity from these claims instead of
+// reading the users table.
+func (om *OAuthManager) GenerateSealosJWT(user *model.User, clusterName, namespace, scope string, admin bool) (string, error) {
+	now := time.Now()
+	expirationTime := now.Add(common.JWTExpirationSeconds * time.Second)
+
+	claims := Claims{
+		UserID:          user.ID,
+		Username:        user.Username,
+		Provider:        user.Provider,
+		SealosCluster:   clusterName,
+		SealosNamespace: namespace,
+		SealosScope:     scope,
+		SealosAdmin:     admin,
+		SealosSub:       user.Sub,
+		RegisteredClaims: jwt.RegisteredClaims{
+			ExpiresAt: jwt.NewNumericDate(expirationTime),
+			IssuedAt:  jwt.NewNumericDate(now),
+			NotBefore: jwt.NewNumericDate(now),
+			Issuer:    "Kite",
+		},
+	}
+
+	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
+	return token.SignedString([]byte(om.jwtSecret))
+}
+
 func (om *OAuthManager) ValidateJWT(tokenString string) (*Claims, error) {
 	token, err := jwt.ParseWithClaims(tokenString, &Claims{}, func(token *jwt.Token) (interface{}, error) {
 		if _, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
@@ -164,6 +194,21 @@ func (om *OAuthManager) RefreshJWT(c *gin.Context, tokenString string) (string, 
 		}
 
 		return om.GenerateJWT(user, newRefreshToken)
+	}
+
+	// Sealos claim sessions have no refresh token either, but re-issuing the
+	// token must keep the workspace claims or the session would fall back to
+	// the users table (where no row may exist) on the next request.
+	if claims.SealosCluster != "" {
+		user := &model.User{
+			Model: model.Model{
+				ID: claims.UserID,
+			},
+			Username: claims.Username,
+			Provider: claims.Provider,
+			Sub:      claims.SealosSub,
+		}
+		return om.GenerateSealosJWT(user, claims.SealosCluster, claims.SealosNamespace, claims.SealosScope, claims.SealosAdmin)
 	}
 
 	// If no refresh token available, just generate a new JWT with existing claims

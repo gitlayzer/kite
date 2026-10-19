@@ -1,9 +1,16 @@
 package auth
 
 import (
+	"encoding/json"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
+	"strings"
 	"testing"
 
+	"github.com/gin-gonic/gin"
 	"github.com/glebarez/sqlite"
+	"github.com/golang-jwt/jwt/v5"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/zxh326/kite/pkg/common"
@@ -160,4 +167,89 @@ func useTestSealosAuthDB(t *testing.T) {
 	t.Cleanup(func() {
 		model.DB = originalDB
 	})
+}
+
+type fakeSealosClusterSyncer struct {
+	hasCluster   bool
+	triggeredFor []string
+}
+
+func (f *fakeSealosClusterSyncer) HasCluster(string) bool { return f.hasCluster }
+
+func (f *fakeSealosClusterSyncer) TriggerSyncForCluster(name string) {
+	f.triggeredFor = append(f.triggeredFor, name)
+}
+
+func TestSealosLoginTriggersAsyncClientBuild(t *testing.T) {
+	setupStaleCleanupTestDB(t)
+
+	originalEnabled := common.SealosAuthEnabled
+	originalSecret := common.SealosJWTSecret
+	originalExempt := common.NamespaceScopeExemptNamespaces
+	t.Cleanup(func() {
+		common.SealosAuthEnabled = originalEnabled
+		common.SealosJWTSecret = originalSecret
+		common.NamespaceScopeExemptNamespaces = originalExempt
+	})
+	common.SealosAuthEnabled = true
+	common.SealosJWTSecret = "sealos-test-secret"
+	common.NamespaceScopeExemptNamespaces = map[string]struct{}{}
+
+	// Hydration normally runs in a background goroutine; run it
+	// synchronously so assertions on the derived rows do not race the test
+	// database teardown.
+	originalHydrationHook := sealosHydrationHook
+	sealosHydrationHook = func(f func()) { f() }
+	t.Cleanup(func() { sealosHydrationHook = originalHydrationHook })
+
+	// syncSealosAdminRoleAssignment looks up the built-in admin role even for
+	// non-exempt workspaces (to strip a stale assignment), so seed it like
+	// rbac.InitRBAC does in a real deployment.
+	adminRole := model.DefaultAdminRole
+	require.NoError(t, model.DB.Create(&adminRole).Error)
+
+	signed, err := jwt.NewWithClaims(jwt.SigningMethodHS256, SealosTokenClaims{
+		UserID:      "user-1",
+		WorkspaceID: "ns-a",
+	}).SignedString([]byte(common.SealosJWTSecret))
+	require.NoError(t, err)
+
+	// The fake has no live client and cannot build one: login must still
+	// return immediately after kicking the build off. The previous handler
+	// blocked here for up to 5s waiting for the client construction.
+	syncer := &fakeSealosClusterSyncer{hasCluster: false}
+	handler := &AuthHandler{
+		manager:        NewOAuthManager(),
+		clusterManager: syncer,
+	}
+
+	gin.SetMode(gin.TestMode)
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	body := fmt.Sprintf(
+		`{"token":%q,"kubeconfig":"dGVzdA==","user":{"userId":"user-1","nsid":"ns-a"}}`,
+		signed,
+	)
+	c.Request = httptest.NewRequest(http.MethodPost, "/api/auth/login/sealos", strings.NewReader(body))
+	c.Request.Header.Set("Content-Type", "application/json")
+
+	handler.SealosLogin(c)
+
+	require.Equal(t, http.StatusOK, w.Code, w.Body.String())
+	assert.Equal(t, []string{buildSealosClusterName("user-1", "ns-a")}, syncer.triggeredFor)
+	assert.False(t, syncer.hasCluster)
+
+	var resp map[string]any
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
+	assert.Equal(t, buildSealosClusterName("user-1", "ns-a"), resp["cluster"])
+
+	// The fast path itself registers nothing, but the (here synchronous)
+	// hydration must still derive the user and role rows in the background.
+	userObj, ok := resp["user"].(map[string]any)
+	require.True(t, ok)
+	assert.Equal(t, buildSealosUsername("user-1"), userObj["username"])
+	_, err = model.GetUserByUsername(buildSealosUsername("user-1"))
+	require.NoError(t, err)
+	_, err = model.GetRoleByName(buildSealosRoleName("user-1"))
+	require.NoError(t, err)
 }

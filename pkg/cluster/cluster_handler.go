@@ -41,6 +41,26 @@ func (cm *ClusterManager) GetClusters(c *gin.Context) {
 			Error:     errMsg,
 		})
 	}
+	// Surface in-flight client builds so the UI can keep its loading gate up
+	// instead of treating the cluster as missing. Names already reported as
+	// ready or failed only get the flag merged onto their existing entry.
+	for i := range result {
+		if _, ok := snapshot.building[result[i].Name]; ok {
+			result[i].Building = true
+		}
+	}
+	for name := range snapshot.building {
+		if _, ok := snapshot.clusters[name]; ok {
+			continue
+		}
+		if _, ok := snapshot.errors[name]; ok {
+			continue
+		}
+		if !rbac.CanAccessCluster(user, name) {
+			continue
+		}
+		result = append(result, common.ClusterInfo{Name: name, Building: true})
+	}
 	sort.Slice(result, func(i, j int) bool {
 		return result[i].Name < result[j].Name
 	})

@@ -646,6 +646,9 @@ export interface Cluster {
   // Surfaced by /api/v1/clusters so the dashboard can start Prometheus
   // queries before the overview response arrives.
   prometheusEnabled?: boolean
+  // True while the backend is still constructing this cluster's client; the
+  // dashboard gate keeps polling /api/v1/clusters until it clears.
+  building?: boolean
   error?: string
 }
 

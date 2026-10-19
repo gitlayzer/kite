@@ -14,9 +14,19 @@ import (
 	"k8s.io/klog/v2"
 )
 
+// sealosClusterSyncer is the slice of the cluster manager the Sealos login
+// flow needs. It is intentionally narrow: login must be able to kick off an
+// asynchronous client build and check for a live client, but it must never
+// block on client construction — the dashboard gate renders the building
+// state reported by /api/v1/clusters until the client is ready.
+type sealosClusterSyncer interface {
+	HasCluster(name string) bool
+	TriggerSyncForCluster(name string)
+}
+
 type AuthHandler struct {
 	manager        *OAuthManager
-	clusterManager *cluster.ClusterManager
+	clusterManager sealosClusterSyncer
 }
 
 func NewAuthHandler(cm *cluster.ClusterManager) *AuthHandler {
@@ -326,6 +336,33 @@ func (h *AuthHandler) RequireAuth() gin.HandlerFunc {
 				return
 			}
 		}
+		// Sealos desktop sessions authenticate from the workspace claims in
+		// the token instead of the users table: login no longer registers
+		// users synchronously, so there may be no row to load, and the
+		// kubeconfig injected into every cluster call stays the real
+		// authorization boundary. The disabled registry keeps an
+		// administrative disable effective for live sessions without a
+		// per-request database read.
+		if claims.SealosCluster != "" {
+			if model.IsUsernameDisabled(claims.Username) {
+				c.JSON(http.StatusUnauthorized, gin.H{
+					"error": "user disabled",
+				})
+				setCookieSecure(c, "auth_token", "", -1)
+				c.Abort()
+				return
+			}
+			c.Set("user", model.User{
+				Username: claims.Username,
+				Provider: claims.Provider,
+				Sub:      claims.SealosSub,
+				Enabled:  true,
+				Roles:    sealosVirtualRoles(claims.SealosCluster, []string{claims.SealosScope}, claims.SealosAdmin),
+			})
+			c.Next()
+			return
+		}
+
 		// Every authenticated request lands here; the short-lived user cache
 		// turns the per-request database read into an in-memory lookup for
 		// bursts while user mutations still invalidate it immediately.

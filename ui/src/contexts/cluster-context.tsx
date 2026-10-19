@@ -78,6 +78,17 @@ export const ClusterProvider: React.FC<{ children: React.ReactNode }> = ({
       return response.json()
     },
     staleTime: 5 * 60 * 1000, // 5 minutes
+    // Sealos login returns before the cluster client build finishes, and
+    // /api/v1/clusters then reports the cluster with `building: true` (or
+    // omits it until the first sync pass runs). Poll until the current
+    // cluster is ready so ClusterGate can flip to the dashboard on its own.
+    refetchInterval: (query) => {
+      const data = query.state.data as Cluster[] | undefined
+      const selected = data?.find((c) => c.name === currentCluster)
+      if (selected?.building) return 2000
+      if (currentCluster && !selected && (data?.length ?? 0) > 0) return 2000
+      return false
+    },
   })
 
   const currentClusterInfo =

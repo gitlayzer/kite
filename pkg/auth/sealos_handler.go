@@ -8,7 +8,6 @@ import (
 	"net/http"
 	"slices"
 	"strings"
-	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/golang-jwt/jwt/v5"
@@ -18,6 +17,7 @@ import (
 	"github.com/zxh326/kite/pkg/permissions"
 	"github.com/zxh326/kite/pkg/rbac"
 	"gorm.io/gorm"
+	"k8s.io/klog/v2"
 )
 
 const (
@@ -25,6 +25,11 @@ const (
 )
 
 var errSealosUserDisabled = errors.New("user disabled")
+
+// sealosHydrationHook schedules the background DB hydration for a Sealos
+// login. It exists so tests can run hydration synchronously instead of
+// racing the test database teardown; production always launches a goroutine.
+var sealosHydrationHook = func(f func()) { go f() }
 
 type SealosTokenClaims struct {
 	WorkspaceUID string `json:"workspaceUid"`
@@ -275,6 +280,52 @@ func buildSealosRoleNamespaces(namespace string) []string {
 	return []string{ns}
 }
 
+// sealosVirtualRoles builds the in-memory role set a Sealos claims session
+// authorizes against. It mirrors exactly what the DB role sync persists —
+// buildSealosRoleNamespaces for the namespace scope and the exempt list for
+// the built-in admin role — so authorization is identical whether a request
+// is evaluated against these claims or against a hydrated DB snapshot.
+func sealosVirtualRoles(clusterName string, namespaces []string, admin bool) []common.Role {
+	roles := []common.Role{{
+		Name:       "sealos-workspace",
+		Clusters:   []string{clusterName},
+		Namespaces: append([]string(nil), namespaces...),
+		Resources:  []string{"*"},
+		Verbs:      []string{"*"},
+	}}
+	if admin {
+		roles = append(roles, common.Role{
+			Name:       model.DefaultAdminRole.Name,
+			Clusters:   []string{"*"},
+			Namespaces: []string{"*"},
+			Resources:  []string{"*"},
+			Verbs:      []string{"*"},
+		})
+	}
+	return roles
+}
+
+// sealosUserDisabled reports whether username is disabled in the users
+// table, recording the answer in the disabled registry. A user without a
+// row cannot be disabled, so a missing row means "allowed": this single
+// indexed read is what preserves the login-time disable check now that
+// registration no longer happens synchronously.
+func sealosUserDisabled(username string) (bool, error) {
+	var row struct {
+		ID      uint
+		Enabled bool
+	}
+	err := model.DB.Model(&model.User{}).Select("id", "enabled").Where("username = ?", username).First(&row).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	model.SetUsernameDisabled(username, !row.Enabled)
+	return !row.Enabled, nil
+}
+
 func ensureSealosRole(roleName, clusterName, namespace string) (*model.Role, error) {
 	namespaces := buildSealosRoleNamespaces(namespace)
 	role := &model.Role{
@@ -415,6 +466,8 @@ func (h *AuthHandler) SealosLogin(c *gin.Context) {
 	}
 
 	clusterName := buildSealosClusterName(userID, workspaceID)
+	// The cluster row stays on the request path: it is the client builder's
+	// source of truth across restarts and one idempotent upsert.
 	identityChanged, err := upsertSealosCluster(clusterName, req.Kubeconfig, workspaceID)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to sync sealos cluster"})
@@ -427,88 +480,56 @@ func (h *AuthHandler) SealosLogin(c *gin.Context) {
 	_, freshToken := parseSealosKubeconfig(req.Kubeconfig)
 	cluster.SetSealosClusterToken(clusterName, freshToken)
 
-	user, err := upsertSealosUser(claims, req.User)
+	// The fast path registers nothing in the users/roles tables: the session
+	// authenticates from the claims signed below and the kubeconfig stays
+	// the real authorization boundary. The disabled check is one indexed
+	// read so an administrative disable keeps blocking login.
+	username := buildSealosUsername(userID)
+	disabled, err := sealosUserDisabled(username)
 	if err != nil {
-		if errors.Is(err, errSealosUserDisabled) {
-			c.JSON(http.StatusForbidden, gin.H{"error": err.Error()})
-			return
-		}
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to sync sealos user"})
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to check sealos user"})
+		return
+	}
+	if disabled {
+		c.JSON(http.StatusForbidden, gin.H{"error": errSealosUserDisabled.Error()})
 		return
 	}
 
-	// Role/RBAC sync runs on every login where the cluster binding's identity
-	// changed (new workspace or a different kubeconfig). A mere token
-	// rotation does not change the identity, so the writes are skipped — the
-	// cheap existence checks below keep the sync self-healing if the role or
-	// assignment was deleted manually in the meantime.
-	roleName := buildSealosRoleName(userID)
-	needRoleSync := identityChanged
-	if !needRoleSync {
-		existingRole, roleErr := model.GetRoleByName(roleName)
-		switch {
-		case errors.Is(roleErr, gorm.ErrRecordNotFound):
-			needRoleSync = true
-		case roleErr != nil:
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to check sealos role"})
-			return
-		default:
-			// Existence alone is not enough: a manually edited or previously
-			// stale role must also still grant THIS exact cluster and
-			// workspace, otherwise the login would keep the user bound to the
-			// wrong scope while skipping the resync.
-			if !slices.Equal(existingRole.Clusters, []string{clusterName}) ||
-				!slices.Equal(existingRole.Namespaces, buildSealosRoleNamespaces(workspaceID)) {
-				needRoleSync = true
-				break
-			}
-			var count int64
-			if err := model.DB.Model(&model.RoleAssignment{}).
-				Where("role_id = ? AND subject_type = ? AND subject = ?", existingRole.ID, model.SubjectTypeUser, user.Username).
-				Count(&count).Error; err != nil {
-				c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to check sealos role assignment"})
-				return
-			}
-			needRoleSync = count == 0
-		}
-	}
-
-	if needRoleSync {
-		role, err := ensureSealosRole(roleName, clusterName, workspaceID)
-		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to sync sealos role"})
-			return
-		}
-		if err := ensureSealosRoleAssignment(role.ID, user.Username); err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to assign sealos role"})
-			return
-		}
-		if err := syncSealosAdminRoleAssignment(workspaceID, user.Username); err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to sync sealos admin role"})
-			return
-		}
-		if err := rbac.ForceSyncRolesConfig(); err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to sync sealos rbac"})
-			return
-		}
-		select {
-		case rbac.SyncNow <- struct{}{}:
-		default:
-		}
-	}
-
+	// Kick the client build off without waiting for it: the response must
+	// stay fast, and the frontend gate renders the building state that
+	// /api/v1/clusters reports until the client is ready. Only the
+	// kubeconfig identity changing or no live client warrants a rebuild;
+	// a token rotation alone is covered by the token store update above.
 	if h.clusterManager != nil {
-		// A rebuild (and the blocking wait for it) is only needed when the
-		// kubeconfig identity changed or no live client exists. A token
-		// rotation alone is already covered by the token store update above.
 		if identityChanged || !h.clusterManager.HasCluster(clusterName) {
 			h.clusterManager.TriggerSyncForCluster(clusterName)
-			_ = h.clusterManager.WaitForCluster(clusterName, 5*time.Second)
 		}
 	}
 
-	user.Roles = rbac.GetUserRoles(*user)
-	jwtToken, err := h.manager.GenerateJWT(user, "")
+	// The DB artifacts (user row, per-workspace role and assignment, RBAC
+	// snapshot) are derived state: hydrate them in the background and never
+	// fail the login on them.
+	sealosHydrationHook(func() {
+		hydrateSealosIdentity(claims, req.User, userID, workspaceID, clusterName, identityChanged)
+	})
+
+	scopeNamespaces := buildSealosRoleNamespaces(workspaceID)
+	admin := common.IsNamespaceScopeExempt(workspaceID)
+
+	displayName := strings.TrimSpace(req.User.Name)
+	if displayName == "" {
+		displayName = userID
+	}
+	user := &model.User{
+		Username: username,
+		Name:     displayName,
+		Provider: sealosProvider,
+		Sub:      sealosProvider + ":" + userID,
+		Enabled:  true,
+		Roles:    sealosVirtualRoles(clusterName, scopeNamespaces, admin),
+	}
+	// buildSealosRoleNamespaces always returns exactly one entry.
+	jwtToken, err := h.manager.GenerateSealosJWT(user, clusterName, workspaceID, scopeNamespaces[0], admin)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to generate JWT"})
 		return
@@ -528,4 +549,83 @@ func (h *AuthHandler) SealosLogin(c *gin.Context) {
 		"access_token": jwtToken,
 		"expires_in":   common.JWTExpirationSeconds,
 	})
+}
+
+// hydrateSealosIdentity persists the DB artifacts a Sealos login used to
+// write synchronously: the user row, the per-workspace role and assignment,
+// and the RBAC snapshot reload. A failure here degrades admin-page freshness
+// (user lists, role bindings) — never the user's access, because the session
+// authenticates from JWT claims and the kubeconfig is the real boundary.
+func hydrateSealosIdentity(claims *SealosTokenClaims, sessionUser SealosSessionUser, userID, workspaceID, clusterName string, identityChanged bool) {
+	user, err := upsertSealosUser(claims, sessionUser)
+	if err != nil {
+		if errors.Is(err, errSealosUserDisabled) {
+			model.SetUsernameDisabled(buildSealosUsername(userID), true)
+			return
+		}
+		klog.Errorf("failed to hydrate sealos user %s: %v", buildSealosUsername(userID), err)
+		return
+	}
+	model.SetUsernameDisabled(user.Username, false)
+
+	// Role/RBAC sync runs when the cluster binding's identity changed (new
+	// workspace or a different kubeconfig). A mere token rotation does not
+	// change the identity, so the writes are skipped — the cheap existence
+	// checks below keep the sync self-healing if the role or assignment was
+	// deleted manually in the meantime.
+	roleName := buildSealosRoleName(userID)
+	needRoleSync := identityChanged
+	if !needRoleSync {
+		existingRole, roleErr := model.GetRoleByName(roleName)
+		switch {
+		case errors.Is(roleErr, gorm.ErrRecordNotFound):
+			needRoleSync = true
+		case roleErr != nil:
+			klog.Errorf("failed to check sealos role %s: %v", roleName, roleErr)
+			return
+		default:
+			// Existence alone is not enough: a manually edited or previously
+			// stale role must also still grant THIS exact cluster and
+			// workspace, otherwise the sync would keep the user bound to the
+			// wrong scope while skipping the resync.
+			if !slices.Equal(existingRole.Clusters, []string{clusterName}) ||
+				!slices.Equal(existingRole.Namespaces, buildSealosRoleNamespaces(workspaceID)) {
+				needRoleSync = true
+				break
+			}
+			var count int64
+			if err := model.DB.Model(&model.RoleAssignment{}).
+				Where("role_id = ? AND subject_type = ? AND subject = ?", existingRole.ID, model.SubjectTypeUser, user.Username).
+				Count(&count).Error; err != nil {
+				klog.Errorf("failed to check sealos role assignment for %s: %v", user.Username, err)
+				return
+			}
+			needRoleSync = count == 0
+		}
+	}
+
+	if !needRoleSync {
+		return
+	}
+	role, err := ensureSealosRole(roleName, clusterName, workspaceID)
+	if err != nil {
+		klog.Errorf("failed to sync sealos role %s: %v", roleName, err)
+		return
+	}
+	if err := ensureSealosRoleAssignment(role.ID, user.Username); err != nil {
+		klog.Errorf("failed to assign sealos role %s to %s: %v", roleName, user.Username, err)
+		return
+	}
+	if err := syncSealosAdminRoleAssignment(workspaceID, user.Username); err != nil {
+		klog.Errorf("failed to sync sealos admin role assignment for %s: %v", user.Username, err)
+		return
+	}
+	if err := rbac.ForceSyncRolesConfig(); err != nil {
+		klog.Errorf("failed to reload rbac config after sealos login: %v", err)
+		return
+	}
+	select {
+	case rbac.SyncNow <- struct{}{}:
+	default:
+	}
 }
